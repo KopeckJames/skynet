@@ -18,3 +18,4 @@ beautifulsoup4
 scikit-learn
 nltk
 plotly
+opencv-python
