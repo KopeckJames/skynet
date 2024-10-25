@@ -1,0 +1,334 @@
+# Multi-Modal RAG Application
+
+A powerful Retrieval-Augmented Generation (RAG) application that can process and analyze multiple types of media including text, PDFs, images, audio, and video files. Built with Streamlit, OpenAI, and Weaviate.
+
+## Features
+
+- 📝 Text Document Processing
+- 📄 PDF Processing with OCR capabilities
+- 🖼️ Image Analysis with OCR and Description
+- 🎵 Audio Transcription
+- 🎥 Video Processing (Audio + Frame Analysis)
+- 🔍 Semantic Search
+- 🤖 AI-Powered Question Answering
+- 💾 Vector Database Storage
+
+## Prerequisites
+
+### API Keys Required
+- OpenAI API Key
+- Weaviate Instance and API Key
+
+### System Requirements
+- Python 3.8 or higher
+- 4GB RAM (minimum)
+- Storage space for dependencies
+
+### System Dependencies
+
+#### Windows
+1. **Tesseract OCR**:
+   - Download the installer from [UB-Mannheim's GitHub](https://github.com/UB-Mannheim/tesseract/wiki)
+   - Install and add to PATH
+   ```
+   setx PATH "%PATH%;C:\Program Files\Tesseract-OCR"
+   ```
+
+2. **Poppler for PDF Processing**:
+   - Download from [poppler releases](http://blog.alivate.com.au/poppler-windows/)
+   - Extract to a folder (e.g., `C:\Program Files\poppler`)
+   - Add to PATH
+   ```
+   setx PATH "%PATH%;C:\Program Files\poppler\bin"
+   ```
+
+#### Linux (Ubuntu/Debian)
+```bash
+# Install Tesseract
+sudo apt-get update
+sudo apt-get install -y tesseract-ocr
+
+# Install Poppler
+sudo apt-get install -y poppler-utils
+
+# Install FFmpeg
+sudo apt-get install -y ffmpeg
+```
+
+#### macOS
+```bash
+# Using Homebrew
+brew install tesseract
+brew install poppler
+brew install ffmpeg
+```
+
+## Installation
+
+1. Clone the repository:
+```bash
+git clone https://your-repository-url.git
+cd your-repository-name
+```
+
+2. Create a virtual environment:
+```bash
+# Windows
+python -m venv .venv
+.venv\Scripts\activate
+
+# Linux/macOS
+python3 -m venv .venv
+source .venv/bin/activate
+```
+
+3. Install Python dependencies:
+```bash
+pip install -r requirements.txt
+```
+
+4. Create a `.env` file in the project root:
+```plaintext
+OPENAI_API_KEY=your_openai_api_key_here
+WEAVIATE_URL=your_weaviate_url_here
+WEAVIATE_API_KEY=your_weaviate_api_key_here
+```
+
+## Running the Application
+
+1. Activate the virtual environment (if not already activated):
+```bash
+# Windows
+.venv\Scripts\activate
+
+# Linux/macOS
+source .venv/bin/activate
+```
+
+2. Start the application:
+```bash
+streamlit run app.py
+```
+
+3. Open your browser and navigate to `http://localhost:8501`
+
+## Usage
+
+1. **Upload Documents**:
+   - Use the sidebar to upload documents
+   - Supported formats: TXT, PDF, PNG, JPG, JPEG, MP3, WAV, MP4, AVI
+   - Provide a title for your document
+
+2. **Ask Questions**:
+   - Enter your question in the main area
+   - Click "Search" to get AI-generated responses
+   - View source documents used for the response
+
+## Troubleshooting
+
+### Common Issues
+
+1. **Tesseract OCR Error**:
+   - Ensure Tesseract is properly installed
+   - Verify PATH environment variable
+   - Try running `tesseract --version` in terminal
+
+2. **PDF Processing Error**:
+   - Check Poppler installation
+   - Verify PATH environment variable
+   - Try running `pdfinfo -v` in terminal
+
+3. **Video Processing Error**:
+   - Ensure FFmpeg is installed
+   - Check system memory availability
+   - Try processing smaller video files first
+
+### Error Messages
+
+- `FileNotFoundError: tesseract is not installed or not in PATH`:
+  - Reinstall Tesseract and verify PATH
+  
+- `Poppler is not installed or not in PATH`:
+  - Reinstall Poppler and verify PATH
+
+## Limitations
+
+- Maximum file sizes:
+  - Images: 10MB
+  - PDFs: 50MB
+  - Audio: 25MB
+  - Video: 100MB
+- Processing time varies based on file size and type
+- Requires stable internet connection for API calls
+
+## Contributing
+
+1. Fork the repository
+2. Create your feature branch (`git checkout -b feature/AmazingFeature`)
+3. Commit your changes (`git commit -m 'Add some AmazingFeature'`)
+4. Push to the branch (`git push origin feature/AmazingFeature`)
+5. Open a Pull Request
+
+## License
+
+This project is licensed under the MIT License - see the LICENSE file for details.
+# Enhanced Multi-Modal RAG Application
+
+A powerful document processing and analysis application that supports multiple file formats and provides advanced search capabilities using RAG (Retrieval-Augmented Generation).
+
+## Features
+
+- Multi-format document processing (Text, PDF, Images, Audio, Video, PowerPoint, Excel, CSV)
+- OCR capabilities for images and PDFs
+- Audio transcription
+- Video processing with frame analysis
+- Semantic search
+- Interactive chat interface
+- Document analytics and clustering
+- Sentiment analysis
+- Topic extraction
+- Tag generation
+
+## Prerequisites
+
+- Docker and Docker Compose
+- OpenAI API key
+- Weaviate cloud instance and API key
+
+## Installation
+
+### 1. Clone the Repository
+```bash
+git clone <repository-url>
+cd rag-application
+```
+
+### 2. Set Up Environment Variables
+Create a `.env` file in the project root:
+```env
+OPENAI_API_KEY=your_openai_api_key
+WEAVIATE_API_KEY=your_weaviate_api_key
+```
+
+### 3. Using Docker (Recommended)
+
+Build and run the application using Docker Compose:
+```bash
+docker-compose up --build
+```
+
+The application will be available at `http://localhost:8501`
+
+### 4. Manual Installation (Alternative)
+
+If you prefer not to use Docker, follow these steps:
+
+1. Install system dependencies:
+   ```bash
+   # Ubuntu/Debian
+   sudo apt-get update
+   sudo apt-get install -y \
+       tesseract-ocr \
+       ffmpeg \
+       poppler-utils \
+       libsm6 \
+       libxext6 \
+       python3-opencv
+   
+   # macOS
+   brew install tesseract
+   brew install ffmpeg
+   brew install poppler
+   
+   # Windows
+   # Install Tesseract-OCR and FFmpeg manually
+   ```
+
+2. Create and activate virtual environment:
+   ```bash
+   python -m venv venv
+   
+   # Windows
+   .\venv\Scripts\activate
+   
+   # Unix/macOS
+   source venv/bin/activate
+   ```
+
+3. Install Python dependencies:
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+4. Download spaCy model:
+   ```bash
+   python -m spacy download en_core_web_sm
+   ```
+
+5. Run the application:
+   ```bash
+   streamlit run app.py
+   ```
+
+## Usage
+
+1. Navigate to `http://localhost:8501` in your web browser
+2. Use the sidebar to switch between:
+   - Document Management
+   - Search & Chat
+   - Analytics Dashboard
+
+### Document Management
+- Upload documents or provide webpage URLs
+- View document analysis including summary, sentiment, tags, and topics
+- Documents are automatically processed and stored
+
+### Search & Chat
+- Perform semantic search across your documents
+- Chat with context from your document collection
+- View similar documents and sources
+
+### Analytics Dashboard
+- View document statistics
+- Explore document clusters
+- Analyze type distribution
+
+## Troubleshooting
+
+### Common Issues:
+
+1. **Memory Issues**
+   ```bash
+   # Increase Docker memory limit
+   docker-compose up --build -e DOCKER_OPTS="-m 4g"
+   ```
+
+2. **Permission Issues**
+   ```bash
+   # Fix temp directory permissions
+   sudo chown -R 1000:1000 temp/
+   ```
+
+3. **Port Conflicts**
+   ```bash
+   # Change port in docker-compose.yml
+   ports:
+     - "8502:8501"
+   ```
+
+## Security Notes
+
+- Keep your API keys secure
+- Don't commit the .env file
+- Use secure connections for production
+- Regularly update dependencies
+
+## Resource Requirements
+
+- Minimum 4GB RAM
+- 2GB free disk space
+- Modern CPU (recommended)
+
+## License
+
+MIT License
