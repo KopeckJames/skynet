@@ -4,6 +4,9 @@ import weaviate
 from bs4 import BeautifulSoup
 import requests
 import PyPDF2
+import pytesseract
+from pdf2image import convert_from_bytes
+from PIL import Image
 import io
 import docx
 from typing import List, Dict, Tuple
@@ -22,105 +25,133 @@ client = weaviate.Client(
     additional_headers={"X-OpenAI-Api-Key": st.secrets["OPENAI_API_KEY"]}
 )
 
-# Define the schema
-schema = {
-    "class": "Document",
-    "vectorizer": "text2vec-openai",
-    "moduleConfig": {
-        "text2vec-openai": {
-            "model": "ada",
-            "modelVersion": "002",
-            "type": "text"
-        }
-    },
-    "properties": [
-        {"name": "content", "dataType": ["text"]},
-        {"name": "source", "dataType": ["string"]},
-        {"name": "timestamp", "dataType": ["date"]}
-    ]
-}
+# Function to fetch all documents from Weaviate
+def fetch_all_documents() -> List[Dict]:
+    """Fetch all documents from the Weaviate database."""
+    try:
+        response = (
+            client.query
+            .get("Document", ["content", "source", "timestamp"])
+            .with_additional(["id"])
+            .do()
+        )
+        return response["data"]["Get"]["Document"]
+    except Exception as e:
+        st.error(f"Error fetching documents: {str(e)}")
+        return []
 
-def format_timestamp() -> str:
-    """Format current timestamp in RFC3339 format"""
-    return datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z'
+# Function to delete a document from Weaviate
+def delete_document_from_weaviate(doc_id: str) -> bool:
+    """Delete a document from the Weaviate database using its ID."""
+    try:
+        client.data_object.delete(doc_id, class_name="Document")
+        return True
+    except Exception as e:
+        st.error(f"Error deleting document: {str(e)}")
+        return False
 
-class BatchProcessor:
-    def __init__(self):
-        self.progress_queue = Queue()
-        self.total_files = 0
-        self.processed_files = 0
-        self.failed_files = []
-        self.processing_lock = threading.Lock()
+# Function for OCR using pytesseract
+def extract_text_with_ocr(pdf_bytes: bytes) -> str:
+    """Extract text from images in a PDF using OCR."""
+    try:
+        images = convert_pdf_to_images(pdf_bytes)
+        extracted_text = ""
+        for image in images:
+            text = pytesseract.image_to_string(image)
+            extracted_text += text + "\n"
+        return extracted_text
+    except Exception as e:
+        st.error(f"Error during OCR processing: {str(e)}")
+        return ""
 
-    def reset(self):
-        """Reset the processor state"""
-        self.total_files = 0
-        self.processed_files = 0
-        self.failed_files = []
-        while not self.progress_queue.empty():
-            self.progress_queue.get()
+def convert_pdf_to_images(pdf_bytes: bytes) -> List[Image.Image]:
+    """Convert each page of a PDF to an image for OCR processing using pdf2image."""
+    try:
+        images = convert_from_bytes(pdf_bytes)
+        return images
+    except Exception as e:
+        st.error(f"Error converting PDF to images: {str(e)}")
+        return []
 
-    def process_file(self, file_data: Tuple[str, bytes, str]) -> Tuple[str, str, bool]:
-        """Process a single file and return its content for user preview."""
-        filepath, content, file_type = file_data
+def improve_text_clarity(text: str, max_tokens_per_chunk: int = 3000) -> str:
+    """Enhance the readability and clarity of the text using GPT in manageable chunks."""
+    chunks = chunk_text(text, chunk_size=max_tokens_per_chunk)
+    improved_chunks = []
+    for i, chunk in enumerate(chunks):
         try:
-            if file_type == "pdf":
-                text = extract_text_from_pdf(io.BytesIO(content))
-            elif file_type == "docx":
-                text = extract_text_from_docx(io.BytesIO(content))
-            elif file_type == "txt":
-                text = content.decode('utf-8')
-            else:
-                raise ValueError(f"Unsupported file type: {file_type}")
-            return filepath, text, True
+            messages = [
+                {"role": "system", "content": "You are an assistant tasked with improving the clarity and readability of a text without introducing any factual inaccuracies."},
+                {"role": "user", "content": f"Improve the following text:\n\n{chunk}"}
+            ]
+            response = client_openai.chat.completions.create(
+                model="gpt-3.5-turbo",
+                messages=messages,
+                temperature=0.3,
+                max_tokens=1000
+            )
+            improved_text = response.choices[0].message.content
+            improved_chunks.append(improved_text)
         except Exception as e:
-            self.failed_files.append((filepath, str(e)))
-            return filepath, str(e), False
+            st.error(f"Error improving chunk {i+1} with GPT: {str(e)}")
+            improved_chunks.append(chunk)  # Add the original chunk if improvement fails
+    
+    return "\n\n".join(improved_chunks)
+
+def verify_no_hallucinations(original_text: str, improved_text: str, max_tokens_per_chunk: int = 3000) -> bool:
+    """Check if the improved text introduces any hallucinations or inaccuracies in manageable chunks."""
+    original_chunks = chunk_text(original_text, chunk_size=max_tokens_per_chunk)
+    improved_chunks = chunk_text(improved_text, chunk_size=max_tokens_per_chunk)
+    
+    for i, (orig_chunk, imp_chunk) in enumerate(zip(original_chunks, improved_chunks)):
+        try:
+            messages = [
+                {"role": "system", "content": "You are a verification assistant. Compare two versions of a text and ensure the improved version does not introduce any hallucinations or inaccuracies."},
+                {"role": "user", "content": f"Original text:\n{orig_chunk}\n\nImproved text:\n{imp_chunk}\n\nDoes the improved version introduce any inaccuracies? Respond with 'yes' or 'no'."}
+            ]
+            response = client_openai.chat.completions.create(
+                model="gpt-3.5-turbo",
+                messages=messages,
+                temperature=0,
+                max_tokens=10
+            )
+            verification = response.choices[0].message.content.strip().lower()
+            if "yes" in verification:
+                return False  # If any chunk introduces inaccuracies, fail the verification
+        except Exception as e:
+            st.error(f"Error verifying chunk {i+1} with GPT: {str(e)}")
+            return False
+    
+    return True
 
 def setup_weaviate():
-    """Initialize Weaviate schema if it doesn't exist"""
+    """Initialize Weaviate schema if it doesn't exist."""
     try:
         existing_schema = client.schema.get()
         schema_exists = any(class_obj["class"] == "Document" for class_obj in existing_schema["classes"]) if "classes" in existing_schema else False
         if not schema_exists:
+            schema = {
+                "class": "Document",
+                "vectorizer": "text2vec-openai",
+                "moduleConfig": {
+                    "text2vec-openai": {
+                        "model": "ada",
+                        "modelVersion": "002",
+                        "type": "text"
+                    }
+                },
+                "properties": [
+                    {"name": "content", "dataType": ["text"]},
+                    {"name": "source", "dataType": ["string"]},
+                    {"name": "timestamp", "dataType": ["date"]}
+                ]
+            }
             client.schema.create_class(schema)
             st.success("Schema created successfully")
     except Exception as e:
         st.error(f"Error setting up schema: {str(e)}")
 
-def extract_text_from_pdf(pdf_file) -> str:
-    """Extract text content from PDF file"""
-    pdf_reader = PyPDF2.PdfReader(pdf_file)
-    return " ".join(page.extract_text() for page in pdf_reader.pages)
-
-def extract_text_from_docx(docx_file) -> str:
-    """Extract text content from DOCX file"""
-    doc = docx.Document(docx_file)
-    return " ".join(paragraph.text for paragraph in doc.paragraphs)
-
-def extract_text_from_webpage(url: str) -> str:
-    """Extract text content from a webpage."""
-    try:
-        response = requests.get(url)
-        response.raise_for_status()
-        soup = BeautifulSoup(response.text, 'html.parser')
-        return ' '.join([p.get_text() for p in soup.find_all('p')])
-    except requests.exceptions.RequestException as e:
-        st.error(f"Error fetching webpage content: {str(e)}")
-        return ""
-
-def fetch_data_from_api(api_url: str, params: Dict[str, str] = None, headers: Dict[str, str] = None) -> str:
-    """Fetch data from an external API."""
-    try:
-        response = requests.get(api_url, params=params, headers=headers)
-        response.raise_for_status()
-        return response.text
-    except requests.exceptions.RequestException as e:
-        st.error(f"Error fetching data from API: {str(e)}")
-        return ""
-
 def add_to_weaviate(content: str, source: str) -> bool:
-    """Add content to Weaviate database"""
+    """Add content to Weaviate database."""
     chunks = chunk_text(content)
     try:
         for chunk in chunks:
@@ -138,7 +169,7 @@ def add_to_weaviate(content: str, source: str) -> bool:
         return False
 
 def chunk_text(text: str, chunk_size: int = 1000, overlap: int = 100) -> List[str]:
-    """Split text into chunks with overlap"""
+    """Split text into chunks with overlap."""
     words = text.split()
     chunks = []
     i = 0
@@ -148,46 +179,28 @@ def chunk_text(text: str, chunk_size: int = 1000, overlap: int = 100) -> List[st
         i += (chunk_size - overlap)
     return chunks
 
-def fetch_all_documents() -> List[Dict]:
-    """Fetch all documents from the Weaviate database."""
+def format_timestamp() -> str:
+    """Format current timestamp in RFC3339 format."""
+    return datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z'
+
+def query_weaviate(query: str, limit: int = 10) -> List[Dict]:
+    """Query Weaviate database for relevant content based on a user query."""
     try:
         response = (
             client.query
             .get("Document", ["content", "source", "timestamp"])
-            .with_additional(["id"])
-            .do()
-        )
-        return response["data"]["Get"]["Document"]
-    except Exception as e:
-        st.error(f"Error fetching documents: {str(e)}")
-        return []
-
-def delete_document_from_weaviate(doc_id: str) -> bool:
-    """Delete a document from the Weaviate database using its ID."""
-    try:
-        client.data_object.delete(doc_id, class_name="Document")
-        return True
-    except Exception as e:
-        st.error(f"Error deleting document: {str(e)}")
-        return False
-
-def query_weaviate(query: str, limit: int = 3) -> List[Dict]:
-    """Query Weaviate database for relevant content"""
-    try:
-        response = (
-            client.query
-            .get("Document", ["content", "source"])
             .with_near_text({"concepts": [query]})
             .with_limit(limit)
             .do()
         )
-        return response["data"]["Get"]["Document"]
+        documents = response.get("data", {}).get("Get", {}).get("Document", [])
+        return documents
     except Exception as e:
         st.error(f"Error querying Weaviate: {str(e)}")
         return []
 
 def get_chatgpt_response(query: str, context: List[Dict]) -> str:
-    """Get response from ChatGPT using retrieved context"""
+    """Get response from ChatGPT using retrieved context."""
     context_text = "\n".join([doc["content"] for doc in context])
     messages = [
         {"role": "system", "content": "You are a helpful assistant. Answer questions based on the provided context."},
@@ -206,52 +219,16 @@ def get_chatgpt_response(query: str, context: List[Dict]) -> str:
         return "I apologize, but I encountered an error generating a response."
 
 def main():
-    st.title("RAG Chatbot with Document Processing and API/URL Data Fetching")
+    st.title("RAG Chatbot with OCR and Enhanced Text Processing")
     setup_weaviate()
     
-    if 'batch_processor' not in st.session_state:
-        st.session_state.batch_processor = BatchProcessor()
-    
     with st.sidebar:
-        st.header("Add Documents or Fetch Data")
+        st.header("Add Documents with OCR Option")
+        use_ocr = st.radio("Use OCR for document processing?", options=["No", "Yes"])
         uploaded_files = st.file_uploader("Upload Documents", type=["pdf", "docx", "txt"], accept_multiple_files=True)
-        
-        st.header("Fetch Data from an External API")
-        api_url = st.text_input("Enter the API URL")
-        api_params = st.text_area("Enter API parameters (JSON format)", value="{}")
-        api_headers = st.text_area("Enter API headers (JSON format)", value="{}")
-        
-        if api_url and st.button("Fetch Data from API"):
-            try:
-                params = eval(api_params)
-                headers = eval(api_headers)
-                fetched_data = fetch_data_from_api(api_url, params=params, headers=headers)
-                if fetched_data:
-                    st.text_area("Fetched Data", fetched_data[:5000], height=300)
-                    if st.button("Add Fetched Data to Weaviate"):
-                        if add_to_weaviate(fetched_data, api_url):
-                            st.success("Successfully added fetched data to Weaviate.")
-                        else:
-                            st.error("Failed to add fetched data to Weaviate.")
-            except Exception as e:
-                st.error(f"Error parsing parameters or headers: {str(e)}")
-        
-        st.header("Add Webpage Content")
-        url = st.text_input("Enter webpage URL")
-        if url and st.button("Extract Content from URL"):
-            content = extract_text_from_webpage(url)
-            if content:
-                st.text_area("Extracted Content", content[:5000], height=300)
-                if st.button("Add Extracted Content to Weaviate"):
-                    if add_to_weaviate(content, url):
-                        st.success(f"Content from {url} added to Weaviate.")
-                    else:
-                        st.error("Failed to add content to Weaviate.")
         
         if uploaded_files:
             st.write(f"Selected {len(uploaded_files)} files")
-            batch_processor = st.session_state.batch_processor
-            batch_processor.reset()
             progress_bar = st.progress(0)
             status_text = st.empty()
             
@@ -259,25 +236,47 @@ def main():
                 file_type = file.type.split('/')[-1]
                 if file_type == 'plain':
                     file_type = 'txt'
-                file_name, content, success = batch_processor.process_file((file.name, file.getvalue(), file_type))
+                
+                # Process with or without OCR based on user selection
+                if use_ocr == "Yes" and file_type == "pdf":
+                    st.write(f"Performing OCR on {file.name}...")
+                    content = extract_text_with_ocr(file.getvalue())
+                else:
+                    if file_type == "pdf":
+                        content = extract_text_from_pdf(io.BytesIO(file.getvalue()))
+                    elif file_type == "docx":
+                        content = extract_text_from_docx(io.BytesIO(file.getvalue()))
+                    else:
+                        content = file.getvalue().decode('utf-8')
+                
+                # Improve text clarity using GPT
+                st.write(f"Improving readability of {file.name}...")
+                improved_content = improve_text_clarity(content)
+                
+                # Verify that no hallucinations are introduced
+                st.write(f"Verifying improvements for {file.name}...")
+                is_verified = verify_no_hallucinations(content, improved_content)
+                
+                if is_verified:
+                    st.success(f"{file.name} has been verified and improved successfully.")
+                    if st.button(f"Add {file.name} to Weaviate", key=f"add_{i}"):
+                        if add_to_weaviate(improved_content, file.name):
+                            st.success(f"Successfully added {file.name} to Weaviate.")
+                        else:
+                            st.error(f"Failed to add {file.name} to Weaviate.")
+                else:
+                    st.warning(f"Verification failed for {file.name}. The improved version may contain inaccuracies and has not been added.")
+
+                # Update progress
                 progress = (i + 1) / len(uploaded_files)
                 progress_bar.progress(progress)
-                status_text.text(f"Processing {file.name} ({i + 1} of {len(uploaded_files)})")
-                
-                if success:
-                    st.write(f"**{file_name}** - Preview of extracted content:")
-                    st.text_area(f"Content from {file_name}", content[:5000], height=300)
-                    if st.button(f"Add {file_name} to Weaviate", key=f"add_{i}"):
-                        if add_to_weaviate(content, file_name):
-                            st.success(f"Successfully added {file_name} to Weaviate.")
-                        else:
-                            st.error(f"Failed to add {file_name} to Weaviate.")
-                else:
-                    st.error(f"Failed to process {file_name}: {content}")
+                status_text.text(f"Processed {file.name} ({i + 1} of {len(uploaded_files)})")
             
+            # Reset progress bar and status after processing
             progress_bar.empty()
             status_text.empty()
     
+    # Document Library Section
     st.header("Document Library")
     documents = fetch_all_documents()
     if documents:
@@ -295,6 +294,7 @@ def main():
     else:
         st.write("No documents found in the library.")
     
+    # Chat Interface
     st.header("Chat")
     if "messages" not in st.session_state:
         st.session_state.messages = []
@@ -303,24 +303,28 @@ def main():
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
     
+    # Chat input
     if prompt := st.chat_input("What's your question?"):
         st.session_state.messages.append({"role": "user", "content": prompt})
         with st.chat_message("user"):
             st.markdown(prompt)
         
+        # Query Weaviate for relevant documents
         relevant_docs = query_weaviate(prompt)
         
+        # Get GPT response
         with st.chat_message("assistant"):
             response = get_chatgpt_response(prompt, relevant_docs)
             st.markdown(response)
             
+            # Highlight sources used in the response
             if relevant_docs:
                 st.write("Sources used in the response:")
                 for doc in relevant_docs:
                     source = doc['source']
-                    snippet = doc['content'][:300] + "..."
+                    full_content = doc['content']
                     st.markdown(f"**Source**: {source}")
-                    st.markdown(f"> {snippet}")
+                    st.text_area(f"Full content from {source}:", full_content, height=300)
         
         st.session_state.messages.append({"role": "assistant", "content": response})
 
