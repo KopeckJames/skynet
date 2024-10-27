@@ -8,7 +8,8 @@ import pytesseract
 from pdf2image import convert_from_bytes
 from PIL import Image
 import io
-import docx
+from docx import Document as DocxDocument
+from fpdf import FPDF
 from typing import List, Dict, Tuple
 import os
 from datetime import datetime
@@ -25,6 +26,93 @@ client = weaviate.Client(
     additional_headers={"X-OpenAI-Api-Key": st.secrets["OPENAI_API_KEY"]}
 )
 
+# Function to extract text from PDF using PyPDF2
+def extract_text_from_pdf(pdf_file: io.BytesIO) -> str:
+    """Extract text content from a PDF file."""
+    pdf_reader = PyPDF2.PdfReader(pdf_file)
+    text = ""
+    for page in pdf_reader.pages:
+        text += page.extract_text() or ""
+    return text
+
+# Function to extract text from DOCX
+def extract_text_from_docx(docx_file: io.BytesIO) -> str:
+    """Extract text content from a DOCX file."""
+    doc = DocxDocument(docx_file)
+    return "\n".join(paragraph.text for paragraph in doc.paragraphs)
+
+# Function to create a DOCX file
+def create_docx(text: str, filename: str) -> bytes:
+    """Create a DOCX file from text."""
+    doc = DocxDocument()
+    doc.add_paragraph(text)
+    byte_io = io.BytesIO()
+    doc.save(byte_io)
+    byte_io.seek(0)
+    return byte_io.getvalue()
+
+# Function to create a PDF file
+def create_pdf(text: str, filename: str) -> bytes:
+    """Create a PDF file from text."""
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_auto_page_break(auto=True, margin=15)
+    pdf.set_font("Arial", size=12)
+    
+    # Write each line to the PDF, handling encoding issues gracefully
+    for line in text.split('\n'):
+        try:
+            # Encode each line as latin1, ignoring characters that cannot be encoded
+            pdf.multi_cell(0, 10, line.encode('latin1', 'ignore').decode('latin1'))
+        except Exception as e:
+            st.error(f"Error writing line to PDF: {e}")
+    
+    # Create a BytesIO object to store the PDF data
+    byte_io = io.BytesIO()
+    pdf.output(dest='S').encode('latin1')
+    byte_io.write(pdf.output(dest='S').encode('latin1'))
+    byte_io.seek(0)
+    return byte_io.getvalue()
+
+# Function to allow download of the improved OCR document
+def download_improved_ocr(content: str):
+    """Provide options to download the improved OCR content as PDF or DOCX."""
+    st.write("Download the improved OCR document:")
+    docx_data = create_docx(content, "improved_ocr.docx")
+    pdf_data = create_pdf(content, "improved_ocr.pdf")
+    
+    st.download_button(
+        label="Download as DOCX",
+        data=docx_data,
+        file_name="improved_ocr.docx",
+        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    )
+    
+    st.download_button(
+        label="Download as PDF",
+        data=pdf_data,
+        file_name="improved_ocr.pdf",
+        mime="application/pdf"
+    )
+def download_chatbot_document(response: str):
+    """Provide options to download the chatbot's response as PDF or DOCX."""
+    st.write("Download the generated document:")
+    docx_data = create_docx(response, "chatbot_generated.docx")
+    pdf_data = create_pdf(response, "chatbot_generated.pdf")
+    
+    st.download_button(
+        label="Download as DOCX",
+        data=docx_data,
+        file_name="chatbot_generated.docx",
+        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    )
+    
+    st.download_button(
+        label="Download as PDF",
+        data=pdf_data,
+        file_name="chatbot_generated.pdf",
+        mime="application/pdf"
+    )
 # Function to fetch all documents from Weaviate
 def fetch_all_documents() -> List[Dict]:
     """Fetch all documents from the Weaviate database."""
@@ -219,7 +307,7 @@ def get_chatgpt_response(query: str, context: List[Dict]) -> str:
         return "I apologize, but I encountered an error generating a response."
 
 def main():
-    st.title("RAG Chatbot with OCR and Enhanced Text Processing")
+    st.title("RAG Chatbot with OCR and Document Download Feature")
     setup_weaviate()
     
     with st.sidebar:
@@ -260,6 +348,7 @@ def main():
                 
                 if is_verified:
                     st.success(f"{file.name} has been verified and improved successfully.")
+                    download_improved_ocr(improved_content)
                     if st.button(f"Add {file.name} to Weaviate", key=f"add_{i}"):
                         if add_to_weaviate(improved_content, file.name):
                             st.success(f"Successfully added {file.name} to Weaviate.")
@@ -317,6 +406,9 @@ def main():
         with st.chat_message("assistant"):
             response = get_chatgpt_response(prompt, relevant_docs)
             st.markdown(response)
+            
+            # Offer the option to download the response as a document
+            download_chatbot_document(response)
             
             # Highlight sources used in the response if the user has enabled this option
             if include_references and relevant_docs:
