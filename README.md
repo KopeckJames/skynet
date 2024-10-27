@@ -39,9 +39,9 @@ pip install -r requirements.txt
 Create a .streamlit/secrets.toml file in the root of the project to store your OpenAI and Weaviate API credentials:
 # .streamlit/secrets.toml
 [secrets]
-OPENAI_API_KEY = "your-openai-api-key"
+```OPENAI_API_KEY = "your-openai-api-key"
 WEAVIATE_URL = "your-weaviate-instance-url"
-WEAVIATE_API_KEY = "your-weaviate-api-key"
+WEAVIATE_API_KEY = "your-weaviate-api-key"```
 #Replace your-openai-api-key, your-weaviate-instance-url, and your-weaviate-api-key with your actual credentials.
 
 Start the Streamlit app using the following command: streamlit run app.py
