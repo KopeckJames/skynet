@@ -22,3 +22,26 @@ Follow these steps to set up the project:
 - Python 3.8+
 - [Weaviate](https://weaviate.io/) instance set up and running (locally or on the cloud)
 - OpenAI API key
+ou also need to have Tesseract installed on your system. For installation:
+
+On Windows: Download and install Tesseract from here.
+On macOS: Use Homebrew:
+bash
+Copy code
+brew install tesseract
+On Linux: Install using apt:
+bash
+Copy code
+sudo apt-get install tesseract-ocr
+Running the Application:
+Clone the repository and navigate to the project directory.
+Install dependencies:
+bash
+Copy code
+pip install -r requirements.txt
+Add your API keys in .streamlit/secrets.toml as explained before.
+Run the Streamlit app:
+bash
+Copy code
+streamlit run app.py
+This code ensures that the user has a seamless experience with OCR processing and improved text handling while keeping the integrity of the original content intact. Let me know if you need any more adjustments or explanations!
