@@ -225,6 +225,7 @@ def main():
     with st.sidebar:
         st.header("Add Documents with OCR Option")
         use_ocr = st.radio("Use OCR for document processing?", options=["No", "Yes"])
+        include_references = st.checkbox("Include source references in responses", value=True)
         uploaded_files = st.file_uploader("Upload Documents", type=["pdf", "docx", "txt"], accept_multiple_files=True)
         
         if uploaded_files:
@@ -317,8 +318,8 @@ def main():
             response = get_chatgpt_response(prompt, relevant_docs)
             st.markdown(response)
             
-            # Highlight sources used in the response
-            if relevant_docs:
+            # Highlight sources used in the response if the user has enabled this option
+            if include_references and relevant_docs:
                 st.write("Sources used in the response:")
                 for doc in relevant_docs:
                     source = doc['source']
