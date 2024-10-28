@@ -291,9 +291,100 @@ def add_to_weaviate(content: str, source: str) -> bool:
         st.error(f"Error adding to Weaviate: {str(e)}")
         return False
 
+
+
+def format_timestamp() -> str:
+    """Format current timestamp in RFC3339 format."""
+    return datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z'
+def process_materials():
+    """Process all materials in the queue with progress tracking."""
+    if st.session_state.processing_queue.empty():
+        st.warning("No materials in the processing queue.")
+        return
+
+    # Create a progress bar
+    total_files = st.session_state.processing_queue.qsize()
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    files_processed = 0
+
+    while not st.session_state.processing_queue.empty():
+        try:
+            # Get file info from queue (this also removes it from the queue)
+            file_info = st.session_state.processing_queue.get()
+            file_name = file_info["name"]
+            file_bytes = file_info["bytes"]
+            file_type = file_info["type"]
+            use_ocr = file_info.get("use_ocr", False)
+
+            # Update status
+            status_text.text(f"Processing {file_name}...")
+
+            # Process based on file type and OCR setting
+            content = ""
+            if use_ocr and file_type == "pdf":
+                content = extract_text_with_ocr(file_bytes)
+            elif file_type == "pdf":
+                content = extract_text_from_pdf(io.BytesIO(file_bytes))
+            elif file_type == "docx":
+                content = extract_text_from_docx(io.BytesIO(file_bytes))
+            else:  # txt files
+                content = file_bytes.decode('utf-8')
+
+            if not content.strip():
+                st.warning(f"No content extracted from {file_name}")
+                continue
+
+            # Improve text clarity using GPT
+            status_text.text(f"Improving text clarity for {file_name}...")
+            improved_content = improve_text_clarity(content)
+
+            # Add only the improved content to Weaviate database
+            status_text.text(f"Adding improved version of {file_name} to database...")
+            if add_to_weaviate(improved_content, file_name):
+                st.success(f"Successfully processed and added improved version of {file_name}")
+            else:
+                st.error(f"Failed to add improved version of {file_name} to database")
+
+            # Update progress
+            files_processed += 1
+            progress_bar.progress(files_processed / total_files)
+            status_text.text(f"Processed {files_processed} of {total_files} files")
+
+        except Exception as e:
+            st.error(f"Unexpected error: {str(e)}")
+            continue
+
+    # Clear the progress bar and status text
+    progress_bar.empty()
+    status_text.empty()
+
+    # Show final status
+    if files_processed == total_files:
+        st.success(f"Successfully processed all {files_processed} files")
+    else:
+        st.warning(f"Processed {files_processed} out of {total_files} files with some errors")
+
+def delete_all_documents():
+    """Delete all documents from the Weaviate database."""
+    try:
+        # Fetch all document IDs
+        documents = fetch_all_documents()
+        for doc in documents:
+            doc_id = doc["_additional"]["id"]
+            delete_document_from_weaviate(doc_id)
+        st.success("All documents have been deleted from the library.")
+    except Exception as e:
+        st.error(f"Error deleting all documents: {str(e)}")
 def chunk_text(text: str, chunk_size: int = 1000, overlap: int = 100) -> List[str]:
     """Split text into chunks with overlap."""
+    if not text:
+        return []
+        
     words = text.split()
+    if not words:
+        return []
+        
     chunks = []
     i = 0
     while i < len(words):
@@ -302,113 +393,353 @@ def chunk_text(text: str, chunk_size: int = 1000, overlap: int = 100) -> List[st
         i += (chunk_size - overlap)
     return chunks
 
-def format_timestamp() -> str:
-    """Format current timestamp in RFC3339 format."""
-    return datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z'
-def process_materials():
-    while not st.session_state.processing_queue.empty():
-        file_info = st.session_state.processing_queue.get()
-        file_name = file_info["name"]
-        file_bytes = file_info["bytes"]
-        file_type = file_info["type"]
-        use_ocr = file_info["use_ocr"]
-
+def improve_text_clarity(text: str, max_tokens_per_chunk: int = 3000) -> str:
+    """Enhance the readability and clarity of the text using GPT in manageable chunks."""
+    if not text.strip():
+        return text
+        
+    chunks = chunk_text(text, chunk_size=max_tokens_per_chunk)
+    if not chunks:
+        return text
+        
+    improved_chunks = []
+    
+    for i, chunk in enumerate(chunks):
         try:
-            if use_ocr and file_type == "pdf":
-                content = extract_text_with_ocr(file_bytes)
-            elif file_type == "pdf":
-                content = extract_text_from_pdf(io.BytesIO(file_bytes))
-            elif file_type == "docx":
-                content = extract_text_from_docx(io.BytesIO(file_bytes))
+            messages = [
+                {"role": "system", "content": "You are an assistant tasked with improving the clarity and readability of text while preserving all factual information. Make the text more coherent and well-structured without changing its meaning."},
+                {"role": "user", "content": f"Improve the following text:\n\n{chunk}"}
+            ]
+            
+            response = client_openai.chat.completions.create(
+                model="gpt-3.5-turbo",
+                messages=messages,
+                temperature=0.3,
+                max_tokens=4000
+            )
+            
+            improved_text = response.choices[0].message.content
+            if improved_text.strip():
+                improved_chunks.append(improved_text)
             else:
-                content = file_bytes.decode('utf-8')
-
-            # Improve text clarity using GPT
-            improved_content = improve_text_clarity(content)
-            # Add to Weaviate database
-            add_to_weaviate(improved_content, file_name)
-
-            st.success(f"Processed and added {file_name} to Weaviate.")
+                improved_chunks.append(chunk)  # Keep original if improvement is empty
+                
         except Exception as e:
-            st.error(f"Error processing {file_name}: {e}")
+            st.error(f"Error improving chunk {i+1}: {str(e)}")
+            improved_chunks.append(chunk)  # Keep original if improvement fails
+    
+    return "\n\n".join(improved_chunks)
 
-def query_weaviate(query: str, limit: int = 10) -> List[Dict]:
-    """Query Weaviate database for relevant content based on a user query."""
+def add_to_weaviate(content: str, source: str) -> bool:
+    """Add content to Weaviate database with error handling and chunking."""
+    if not content.strip():
+        st.warning(f"No content to add for {source}")
+        return False
+        
+    try:
+        chunks = chunk_text(content)
+        if not chunks:
+            st.warning(f"No valid chunks created for {source}")
+            return False
+            
+        for chunk in chunks:
+            if chunk.strip():  # Only add non-empty chunks
+                client.data_object.create(
+                    class_name="Document",
+                    data_object={
+                        "content": chunk,
+                        "source": source,
+                        "timestamp": format_timestamp()
+                    }
+                )
+        return True
+        
+    except Exception as e:
+        st.error(f"Error adding content to Weaviate: {str(e)}")
+        return False
+
+
+def verify_document_in_weaviate(source_name: str) -> bool:
+    """Verify if a specific document exists in Weaviate."""
     try:
         response = (
             client.query
             .get("Document", ["content", "source", "timestamp"])
-            .with_near_text({"concepts": [query]})
+            .with_where({
+                "path": ["source"],
+                "operator": "Equal",
+                "valueString": source_name
+            })
+            .do()
+        )
+        
+        if response and "data" in response and "Get" in response["data"]:
+            documents = response["data"]["Get"]["Document"]
+            return len(documents) > 0
+        return False
+    except Exception as e:
+        st.error(f"Error verifying document: {str(e)}")
+        return False
+
+def list_all_documents() -> None:
+    """List all documents in Weaviate with their content preview."""
+    try:
+        response = (
+            client.query
+            .get("Document", ["content", "source", "timestamp"])
+            .with_additional(["id"])
+            .do()
+        )
+        
+        if response and "data" in response and "Get" in response["data"]:
+            documents = response["data"]["Get"]["Document"]
+            
+            if not documents:
+                st.warning("No documents found in the database.")
+                return
+                
+            st.write("### Documents in Database:")
+            for doc in documents:
+                st.write(f"\n**Source:** {doc['source']}")
+                st.write(f"**Preview:** {doc['content'][:200]}...")
+                st.write("---")
+        else:
+            st.warning("No documents found in the database.")
+            
+    except Exception as e:
+        st.error(f"Error listing documents: {str(e)}")
+
+def improved_query_weaviate(query: str, limit: int = 5) -> List[Dict]:
+    """Enhanced Weaviate query with better name matching and fuzzy search."""
+    try:
+        # First, check if we have any documents at all
+        all_docs = (
+            client.query
+            .get("Document", ["content", "source"])
+            .do()
+        )
+        
+        if not all_docs.get("data", {}).get("Get", {}).get("Document", []):
+            st.warning("No documents found in the database. Please upload documents first.")
+            return []
+
+        # 1. Try content-based search first
+        content_response = (
+            client.query
+            .get("Document", ["content", "source", "timestamp"])
+            .with_near_text({
+                "concepts": [query],
+                "certainty": 0.3  # Much lower threshold for better recall
+            })
             .with_limit(limit)
             .do()
         )
-        documents = response.get("data", {}).get("Get", {}).get("Document", [])
-        return documents
+        
+        content_matches = content_response.get("data", {}).get("Get", {}).get("Document", [])
+
+        # 2. Try searching within content using where filter
+        words = query.lower().split()
+        where_filter = {
+            "operator": "Or",
+            "operands": [
+                {
+                    "path": ["content"],
+                    "operator": "Like",
+                    "valueString": f"*{word}*"
+                } for word in words
+            ]
+        }
+        
+        where_response = (
+            client.query
+            .get("Document", ["content", "source", "timestamp"])
+            .with_where(where_filter)
+            .with_limit(limit)
+            .do()
+        )
+        
+        where_matches = where_response.get("data", {}).get("Get", {}).get("Document", [])
+
+        # Combine and deduplicate results
+        all_matches = []
+        seen_sources = set()
+        
+        # Process all matches
+        for matches in [content_matches, where_matches]:
+            for doc in matches:
+                if doc['source'] not in seen_sources:
+                    # Check if the content is relevant to the query
+                    query_words = set(query.lower().split())
+                    content_words = set(doc['content'].lower().split())
+                    if query_words & content_words:  # If there's any word overlap
+                        all_matches.append(doc)
+                        seen_sources.add(doc['source'])
+
+        # Debug output
+        st.write("### Query Debug Information")
+        st.write(f"Query: '{query}'")
+        st.write(f"Total documents in database: {len(all_docs['data']['Get']['Document'])}")
+        st.write(f"Semantic matches found: {len(content_matches)}")
+        st.write(f"Keyword matches found: {len(where_matches)}")
+        st.write(f"Combined unique relevant matches: {len(all_matches)}")
+        
+        if all_matches:
+            st.write("\n### Matched Documents:")
+            for idx, doc in enumerate(all_matches, 1):
+                st.write(f"\n{idx}. Source: {doc['source']}")
+                # Show more context around matched content
+                content_preview = doc['content'][:300]
+                st.write(f"Preview: {content_preview}...")
+                
+                # Highlight why this document was matched
+                query_words = query.lower().split()
+                matches_found = [word for word in query_words if word.lower() in content_preview.lower()]
+                if matches_found:
+                    st.write(f"Matched terms: {', '.join(matches_found)}")
+        else:
+            st.write("\nNo direct matches found. Showing all documents containing potentially relevant information:")
+            for doc in all_docs['data']['Get']['Document']:
+                if "Resume" in doc['source'] or any(word.lower() in doc['content'].lower() for word in query.split()):
+                    st.write(f"\nSource: {doc['source']}")
+                    st.write(f"Preview: {doc['content'][:300]}...")
+
+        return all_matches if all_matches else [doc for doc in all_docs['data']['Get']['Document'] 
+                                              if "Resume" in doc['source'] or 
+                                              any(word.lower() in doc['content'].lower() for word in query.split())][:limit]
+        
     except Exception as e:
         st.error(f"Error querying Weaviate: {str(e)}")
         return []
 
-def get_chatgpt_response(query: str, context: List[Dict]) -> str:
-    """Get response from ChatGPT using retrieved context."""
-    context_text = "\n".join([doc["content"] for doc in context])
-    messages = [
-        {"role": "system", "content": "You are a helpful assistant. Answer questions based on the provided context."},
-        {"role": "user", "content": f"Context:\n{context_text}\n\nQuestion: {query}"}
-    ]
+def get_chatgpt_response(prompt: str, context: List[Dict]) -> str:
+    """Get response from ChatGPT using retrieved context with improved name handling."""
+    if not context:
+        return (
+            "I don't have any relevant information about that in my document library. "
+            "Please upload some relevant documents first."
+        )
+    
+    # Format the context for the prompt
+    context_text = "\n\n".join([
+        f"Document '{doc['source']}':\n{doc['content']}"
+        for doc in context
+    ])
+    
     try:
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You are a helpful research assistant. Your task is to provide accurate, "
+                    "comprehensive answers based on the provided documents. When answering:\n"
+                    "1. Use only the information from the provided documents\n"
+                    "2. If you find relevant information about a person, be thorough in describing their background\n"
+                    "3. Always cite your sources using the document names\n"
+                    "4. If the information is from a resume, present it in a professional manner\n"
+                    "5. Structure your response for clarity"
+                )
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"Based on the provided documents, please answer this question: {prompt}\n\n"
+                    f"Documents for reference:\n{context_text}"
+                )
+            }
+        ]
+        
         response = client_openai.chat.completions.create(
             model="gpt-3.5-turbo",
             messages=messages,
-            temperature=0.7,
-            max_tokens=1000
+            temperature=0.3,
+            max_tokens=2000
         )
+        
         return response.choices[0].message.content
+        
     except Exception as e:
-        st.error(f"Error getting ChatGPT response: {str(e)}")
-        return "I apologize, but I encountered an error generating a response."
+        st.error(f"Error generating response: {str(e)}")
+        return "I encountered an error while generating a response. Please try again."
+
+def debug_chat_interface():
+    st.header("Debug Chat Interface")
+    
+    # Document Database Status
+    st.write("### Document Database Status")
+    list_all_documents()
+    
+    # Test Query Section
+    st.write("\n### Test Query")
+    test_query = st.text_input("Enter a test query:")
+    if test_query:
+        st.write("### Performing test query...")
+        docs = improved_query_weaviate(test_query)
+        
+        if docs:
+            st.write("\n### Retrieved Documents for Response Generation:")
+            # Create tabs for each document instead of expanders
+            doc_tabs = st.tabs([f"Document {idx}: {doc['source']}" for idx, doc in enumerate(docs, 1)])
+            
+            for tab, doc in zip(doc_tabs, docs):
+                with tab:
+                    st.text_area("Content", doc['content'], height=200)
+            
+            st.write("\n### Generated Response:")
+            response = get_chatgpt_response(test_query, docs)
+            st.markdown(response)
+        else:
+            st.warning("No matching documents found for the query.")
 
 def start_chat_interface():
-    st.header("Chat")
+    st.header("Chat with COGNITEXT")
+    
+    # Initialize chat history
     if "messages" not in st.session_state:
         st.session_state.messages = []
-    
-    # Checkbox to include or exclude sources.
-    include_sources = st.checkbox("Include sources in responses", value=True)
 
-    # Display chat history.
+    # Add debug toggle
+    show_debug = st.checkbox("Show Debug Information")
+    if show_debug:
+        debug_chat_interface()
+        st.divider()  # Add a visual separator
+
+    # Display chat history
     for message in st.session_state.messages:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
-    
-    # Chat input.
-    if prompt := st.chat_input("What's your question?"):
-        # Add user message to chat history.
+
+    # Get user input
+    if prompt := st.chat_input("What would you like to know about?"):
         st.session_state.messages.append({"role": "user", "content": prompt})
         with st.chat_message("user"):
             st.markdown(prompt)
 
-        # Query Weaviate for relevant documents.
-        relevant_docs = query_weaviate(prompt)
+        with st.spinner("Searching documents..."):
+            relevant_docs = improved_query_weaviate(prompt)
 
-        # Get GPT response.
         with st.chat_message("assistant"):
-            response = get_chatgpt_response(prompt, relevant_docs)
-            st.markdown(response)
-            download_chatbot_document(response)
+            if relevant_docs:
+                response = get_chatgpt_response(prompt, relevant_docs)
+                st.markdown(response)
+                
+                # Use columns for source display instead of expanders
+                st.write("### Source Documents:")
+                cols = st.columns(len(relevant_docs))
+                for idx, (col, doc) in enumerate(zip(cols, relevant_docs), 1):
+                    with col:
+                        st.markdown(f"**Source {idx}: {doc['source']}**")
+                        st.text_area(
+                            f"Content",
+                            doc['content'],
+                            height=150,
+                            key=f"source_{idx}_{doc['source']}"
+                        )
+            else:
+                response = "I don't have any relevant information about that in my document library. Please upload some relevant documents first."
+                st.markdown(response)
 
-            # Display sources if the checkbox is checked.
-            if include_sources and relevant_docs:
-                st.write("Sources used in the response:")
-                for idx, doc in enumerate(relevant_docs):
-                    st.markdown(f"**Source**: {doc['source']}")
-                    # Add a unique key using the index or document ID.
-                    st.text_area(f"Full content from {doc['source']}:", doc['content'], height=300, key=f"doc_{idx}_{doc['source']}")
-        
-        # Add assistant response to chat history.
         st.session_state.messages.append({"role": "assistant", "content": response})
-
-
-# Main UI function
+        download_chatbot_document(response)
 def main():
     st.set_page_config(
         page_title="COGNITEXT",
@@ -416,9 +747,16 @@ def main():
         layout="wide"
     )
 
+    # Initialize session state variables for modal states
+    if "show_upload_modal" not in st.session_state:
+        st.session_state.show_upload_modal = False
+    if "show_url_modal" not in st.session_state:
+        st.session_state.show_url_modal = False
+    if "show_audio_modal" not in st.session_state:
+        st.session_state.show_audio_modal = False
+    setup_weaviate()
     # Define tabs for different sections
-    tabs = st.tabs(["Main", "Document Library"])
-
+    tabs = st.tabs(["Main", "Document Library", "Chat"])
     # Main tab for chat and file handling
     with tabs[0]:
         st.markdown(
@@ -426,117 +764,145 @@ def main():
             unsafe_allow_html=True
         )
         st.markdown(
-            "<p style='text-align: center; color: #666666;'>An AI-powered research and writing assistant that works best with the sources you upload</p>",
+            "<p style='text-align: center; color: #666666;'>An AI-powered Assitant</p>",
             unsafe_allow_html=True
         )
-        
 
         col1, col2, col3 = st.columns(3)
 
         with col1:
-            st.image("upload_icon.png", width = 175)
-            if st.button("Upload Documents"):
-                with st.expander("Upload Documents with OCR Option", expanded=True):
-                    use_ocr = st.radio("Use OCR for document processing?", options=["No", "Yes"])
-                    uploaded_files = st.file_uploader("Upload Documents", type=["pdf", "docx", "txt"], accept_multiple_files=True)
-                    if uploaded_files:
-                        for uploaded_file in uploaded_files:
-                            file_info = {
-                                "name": uploaded_file.name,
-                                "bytes": uploaded_file.getvalue(),
-                                "type": uploaded_file.type.split('/')[-1],
-                                "use_ocr": use_ocr == "Yes"
-                            }
-                            st.session_state.processing_queue.put(file_info)
-                            st.success(f"Added {uploaded_file.name} to the processing queue.")
+            st.image("upload_icon.png", width=175)
+            if st.button("Upload Documents", key="upload_btn"):
+                st.session_state.show_upload_modal = True
+            
+            if st.session_state.show_upload_modal:
+               with st.expander("Upload Documents with OCR Option", expanded=True):
+                use_ocr = st.radio("Use OCR for document processing?", options=["No", "Yes"], key="ocr_radio")
+                uploaded_files = st.file_uploader(
+                    "Upload Documents", 
+                    type=["pdf", "docx", "txt"], 
+                    accept_multiple_files=True,
+                    key="doc_uploader"
+                )
+
+                if uploaded_files:
+                    for uploaded_file in uploaded_files:
+                        file_info = {
+                            "name": uploaded_file.name,
+                            "bytes": uploaded_file.getvalue(),
+                            "type": uploaded_file.type.split('/')[-1],
+                            "use_ocr": use_ocr == "Yes"
+                        }
+                        # Add file directly to processing function
+                        st.session_state.processing_queue.put(file_info)
+                    
+                    # Call process_materials immediately after adding files
+                    process_materials()
 
         with col2:
-            st.image("url_icon.png", width = 175)
-            if st.button("Extract from URL"):
+            st.image("url_icon.png", width=175)
+            if st.button("Extract from URL", key="url_btn"):
+                st.session_state.show_url_modal = True
+            
+            if st.session_state.show_url_modal:
                 with st.expander("Extract Content from URL", expanded=True):
-                    url = st.text_input("Enter webpage URL")
+                    url = st.text_input("Enter webpage URL", key="url_input")
+                    
+                    # Add a close button
+                    col2a, col2b = st.columns([4, 1])
+                    with col2b:
+                        if st.button("Close", key="close_url"):
+                            st.session_state.show_url_modal = False
+                            st.rerun()
+                    
                     if url:
                         content = extract_text_from_webpage(url)
-                        st.text_area("Extracted Content", content[:5000], height=300)
-                        if st.button("Add Extracted Content to Weaviate"):
+                        st.text_area("Extracted Content", content[:5000], height=300, key="url_content")
+                        if st.button("Add to Weaviate", key="add_url"):
                             if add_to_weaviate(content, url):
                                 st.success("Successfully added the extracted content to Weaviate.")
-                            else:
-                                st.error("Failed to add the extracted content to Weaviate.")
+                                st.session_state.show_url_modal = False
+                                st.rerun()
 
         with col3:
-            st.image("audio_icon.png", width = 175)
-            if st.button("Upload Audio for Transcription"):
+            st.image("audio_icon.png", width=175)
+            if st.button("Upload Audio for Transcription", key="audio_btn"):
+                st.session_state.show_audio_modal = True
+            
+            if st.session_state.show_audio_modal:
                 with st.expander("Upload Audio Files for Transcription", expanded=True):
-                    audio_files = st.file_uploader("Upload Audio Files", type=["mp3", "wav", "m4a"], accept_multiple_files=True)
+                    audio_files = st.file_uploader(
+                        "Upload Audio Files", 
+                        type=["mp3", "wav", "m4a"], 
+                        accept_multiple_files=True,
+                        key="audio_uploader"
+                    )
+                    
+                    # Add a close button
+                    col3a, col3b = st.columns([4, 1])
+                    with col3b:
+                        if st.button("Close", key="close_audio"):
+                            st.session_state.show_audio_modal = False
+                            st.rerun()
+                    
                     if audio_files:
                         for audio_file in audio_files:
                             st.info(f"Transcribing {audio_file.name}...")
                             transcription = transcribe_audio(audio_file)
-                            st.text_area(f"Transcription of {audio_file.name}", transcription, height=300)
-                            if st.button(f"Add Transcription of {audio_file.name} to Weaviate", key=f"add_audio_{audio_file.name}"):
+                            st.text_area(
+                                f"Transcription of {audio_file.name}", 
+                                transcription, 
+                                height=300,
+                                key=f"transcription_{audio_file.name}"
+                            )
+                            if st.button("Add to Weaviate", key=f"add_audio_{audio_file.name}"):
                                 if add_to_weaviate(transcription, audio_file.name):
                                     st.success(f"Successfully added the transcription of {audio_file.name} to Weaviate.")
-                                else:
-                                    st.error(f"Failed to add the transcription of {audio_file.name} to Weaviate.")
+                                    st.session_state.show_audio_modal = False
+                                    st.rerun()
 
         # Process materials button
-        st.image("process_icon.png", width = 175)
-        if st.button("Process All Materials"):
+        st.image("process_icon.png", width=175)
+        if st.button("Process All Materials", key="process_btn"):
             process_materials()
             st.success("All materials processed successfully.")
 
-    # Document Library tab for viewing and managing documents
+        # Add a clear all button
+        if st.button("Clear All Modals", key="clear_all"):
+            st.session_state.show_upload_modal = False
+            st.session_state.show_url_modal = False
+            st.session_state.show_audio_modal = False
+            st.rerun()
+
+    # Document Library tab
     with tabs[1]:
         st.header("Document Library")
         documents = fetch_all_documents()
         if documents:
             df = pd.DataFrame(documents)
             df['timestamp'] = pd.to_datetime(df['timestamp'])
-            st.dataframe(df[['source', 'timestamp']].rename(columns={'source': 'Document Source', 'timestamp': 'Uploaded At'}))
+            st.dataframe(df[['source', 'timestamp']].rename(
+                columns={'source': 'Document Source', 'timestamp': 'Uploaded At'}
+            ))
             
             for idx, doc in enumerate(documents):
                 doc_source = doc['source']
                 doc_id = doc['_additional']['id']
-                if st.button(f"Delete '{doc_source}'", key=f"delete_{idx}"):
+                delete_key = f"delete_{doc_id}"
+                if st.button(f"Delete '{doc_source}'", key=delete_key):
                     if delete_document_from_weaviate(doc_id):
                         st.success(f"Deleted '{doc_source}' successfully.")
-                        st.experimental_rerun()  # Refresh the page to update the list of documents.
+                        time.sleep(1)  # Give user time to see the success message
+                        st.rerun()
+            # Add a "Delete All Files" button
+        if st.button("Delete All Files"):
+            delete_all_documents()
+
         else:
             st.write("No documents found in the library.")
-
-    # Sidebar for Chat Interface
-    with st.sidebar:
-        st.header("Chat with COGNITEXT")
-        if "messages" not in st.session_state:
-            st.session_state.messages = []
-
-        include_sources = st.checkbox("Include sources in responses", value=True)
-
-        for message in st.session_state.messages:
-            with st.chat_message(message["role"]):
-                st.markdown(message["content"])
-
-        if prompt := st.chat_input("What's your question?"):
-            st.session_state.messages.append({"role": "user", "content": prompt})
-            with st.chat_message("user"):
-                st.markdown(prompt)
-
-            relevant_docs = query_weaviate(prompt)
-
-            with st.chat_message("assistant"):
-                response = get_chatgpt_response(prompt, relevant_docs)
-                st.markdown(response)
-                download_chatbot_document(response)
-
-                if include_sources and relevant_docs:
-                    st.write("Sources used in the response:")
-                    for idx, doc in enumerate(relevant_docs):
-                        st.markdown(f"**Source**: {doc['source']}")
-                        st.text_area(f"Full content from {doc['source']}:", doc['content'], height=300, key=f"doc_{idx}")
-
-            st.session_state.messages.append({"role": "assistant", "content": response})
-
+    # Chat tab
+    with tabs[2]:
+        start_chat_interface()
 # Run the main function
 if __name__ == "__main__":
     main()
