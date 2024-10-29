@@ -5,7 +5,7 @@ beautifulsoup4
 requests
 PyPDF2
 python-docx
-queue
+
 pytesseract
 Pillow
 PyPDF2
