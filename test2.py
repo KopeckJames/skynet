@@ -372,64 +372,56 @@ class ConversationManager:
         
     def process_text(self, text: str) -> Tuple[str, bool]:
         """Process text through improvement and verification chains."""
-        result = self.improve_chain({"input_text": text})
-        improved_text = result["improved_text"]
-        
-        verify_result = self.verify_chain({
-            "original_text": text,
-            "improved_text": improved_text
-        })
-        
-        return improved_text, verify_result["verification"].lower() == "no"
+        return self.processing_chain.process(text)
         
     def clear_memory(self):
         """Clear conversation memory."""
         self.memory.clear()
         
     def _create_processing_chain(self):
-        """Create text processing chains."""
-        # Improvement chain
+        """Create text processing chain."""
         improve_prompt = PromptTemplate(
-            input_variables=["input_text"],
+            input_variables=["text"],
             template="""
             Improve the clarity and readability of the following text while
             preserving all factual information:
             
-            {input_text}
+            {text}
             
             Improved text:
             """
         )
         
-        self.improve_chain = LLMChain(
-            llm=llm,
-            prompt=improve_prompt,
-            output_key="improved_text"
-        )
-        
-        # Verification chain
         verify_prompt = PromptTemplate(
-            input_variables=["original_text", "improved_text"],
+            input_variables=["original", "improved"],
             template="""
             Compare the original and improved texts for accuracy:
             
-            Original: {original_text}
-            Improved: {improved_text}
+            Original: {original}
+            Improved: {improved}
             
             Are there any factual inconsistencies? Respond with 'yes' or 'no':
             """
         )
         
-        self.verify_chain = LLMChain(
+        improve_chain = LLMChain(
             llm=llm,
-            prompt=verify_prompt,
-            output_key="verification"
+            prompt=improve_prompt,
+            verbose=True
         )
         
-        return {
-            "improve_chain": self.improve_chain,
-            "verify_chain": self.verify_chain
-        }
+        verify_chain = LLMChain(
+            llm=llm,
+            prompt=verify_prompt,
+            verbose=True
+        )
+        
+        return SequentialChain(
+            chains=[improve_chain, verify_chain],
+            input_variables=["text"],
+            output_variables=["improved_text", "verification"],
+            verbose=True
+        )
 
 # Initialize managers
 document_processor = DocumentProcessor()
@@ -989,7 +981,7 @@ def list_all_documents() -> None:
     except Exception as e:
         st.error(f"Error listing documents: {str(e)}")
 
-def improved_query_weaviate(query: str, limit: int = 500) -> List[Dict]:  # Added limit parameter with default value
+def improved_query_weaviate(query: str) -> List[Dict]:
     """Enhanced Weaviate query with better name matching and fuzzy search."""
     try:
         # First, check if we have any documents at all
@@ -1011,7 +1003,7 @@ def improved_query_weaviate(query: str, limit: int = 500) -> List[Dict]:  # Adde
                 "concepts": [query],
                 "certainty": 0.3  # Much lower threshold for better recall
             })
-            .with_limit(limit)  # Using the limit parameter
+            .with_limit(limit)
             .do()
         )
         
@@ -1034,7 +1026,7 @@ def improved_query_weaviate(query: str, limit: int = 500) -> List[Dict]:  # Adde
             client.query
             .get("Document", ["content", "source", "timestamp"])
             .with_where(where_filter)
-            .with_limit(limit)  # Using the limit parameter
+            .with_limit(limit)
             .do()
         )
         
@@ -1088,9 +1080,9 @@ def improved_query_weaviate(query: str, limit: int = 500) -> List[Dict]:  # Adde
                                               any(word.lower() in doc['content'].lower() for word in query.split())][:limit]
         
     except Exception as e:
-        logger.log_error(f"Error querying Weaviate: {str(e)}")
         st.error(f"Error querying Weaviate: {str(e)}")
         return []
+
 def get_chatgpt_response(prompt: str, context: List[Dict]) -> str:
     """Get response from ChatGPT using retrieved context with improved name handling."""
     if not context:
@@ -1243,9 +1235,6 @@ def main():
             "<h1 style='text-align: center; color: #3366cc;'>Welcome to COGNITEXT</h1>",
             unsafe_allow_html=True
         )
-        left_co, cent_co, last_co =st.columns(3)
-        with cent_co:
-            st.image("cognitext.jpg", use_column_width="auto")
         st.markdown(
             "<p style='text-align: center; color: #666666;'>An AI-powered Assitant</p>",
             unsafe_allow_html=True
