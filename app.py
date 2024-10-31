@@ -714,6 +714,40 @@ def main():
         initial_sidebar_state="expanded"
     )
 
+    # Custom CSS for coloring
+    st.markdown("""
+    <style>
+        .stApp {
+            background-color: #a9c9c4;
+        }
+        .stButton>button {
+            background-color: #a7bdcd;
+            color: #505a5d;
+        }
+        .stTextInput>div>div>input {
+            background-color: #9fb9e6;
+        }
+        .stHeader {
+            color: #638296;
+        }
+        /* Additional styles to ensure readability and consistency */
+        .stTextArea textarea {
+            background-color: #9fb9e6;
+            color: #505a5d;
+        }
+        .stSelectbox>div>div>select {
+            background-color: #9fb9e6;
+        }
+        .stCheckbox>label>span {
+            color: #505a5d;
+        }
+        /* Ensure text color consistency */
+        .stApp {
+            color: #505a5d;
+        }
+    </style>
+    """, unsafe_allow_html=True)
+    # Rest of your main() function code...
     # Initialize session states if not exists
     if "messages" not in st.session_state:
         st.session_state.messages = []
@@ -728,7 +762,6 @@ def main():
         
         # Document Upload Section
         st.header("Upload Documents")
-        
         # File Upload
         uploaded_files = st.file_uploader(
             "Upload documents",
