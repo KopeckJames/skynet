@@ -708,7 +708,7 @@ def main():
     """Main application function."""
     # Page configuration
     st.set_page_config(
-        page_title="COGNITEXT",
+        page_title="COGNTEXT",
         page_icon="📚",
         layout="wide",
         initial_sidebar_state="expanded"
@@ -834,7 +834,7 @@ def main():
         )
 
     # Main Chat Interface
-    st.title("💬 Chat with COGNITEXT")
+    st.title("💬 Chat with COGNTEXT")
     
     # Display chat history
     for message in st.session_state.messages:
